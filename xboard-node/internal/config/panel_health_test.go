@@ -22,8 +22,8 @@ func TestPanelFailClosedEnabled(t *testing.T) {
 
 func TestPanelGracePeriodDuration(t *testing.T) {
 	cfg := &Config{}
-	if cfg.PanelGracePeriodDuration().Seconds() != 90 {
-		t.Fatalf("expected 90s default, got %v", cfg.PanelGracePeriodDuration())
+	if cfg.PanelGracePeriodDuration().Seconds() != 300 {
+		t.Fatalf("expected 300s default, got %v", cfg.PanelGracePeriodDuration())
 	}
 	cfg.Node.PanelGracePeriod = 30
 	if cfg.PanelGracePeriodDuration().Seconds() != 30 {

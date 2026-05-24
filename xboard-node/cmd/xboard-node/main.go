@@ -161,13 +161,20 @@ func runWithReload(initialRoot *config.RootConfig, configPath string) {
 				defer wg.Done()
 				if instanceCfg.IsMachineMode() {
 					nlog.Core().Info("starting machine instance", "instance", instanceCfg.InstanceID, "machine_id", instanceCfg.Machine.MachineID, "panel_url", instanceCfg.Panel.URL)
-					orch := machine.New(instanceCfg)
-					if err := orch.Run(ctx); err != nil {
-						nlog.Core().Error("machine instance exited with error", "instance", instanceCfg.InstanceID, "error", err)
-						errCh <- err
-						cancel()
+					for {
+						orch := machine.New(instanceCfg)
+						err := orch.Run(ctx)
+						if ctx.Err() != nil {
+							return
+						}
+						nlog.Core().Warn("machine instance exited, restarting in 5s",
+							"instance", instanceCfg.InstanceID, "error", err)
+						select {
+						case <-time.After(5 * time.Second):
+						case <-ctx.Done():
+							return
+						}
 					}
-					return
 				}
 				nodes := instanceCfg.ExpandNodes()
 				nlog.Core().Info("starting node instance", "instance", instanceCfg.InstanceID, "nodes", len(nodes), "panel_url", instanceCfg.Panel.URL)
@@ -188,11 +195,21 @@ func runWithReload(initialRoot *config.RootConfig, configPath string) {
 								return
 							}
 						}
-						svc := service.New(nodeCfg)
-						if err := svc.Run(ctx); err != nil {
-							nlog.Core().Error("node service exited with error", "instance", nodeCfg.InstanceID, "node_id", nodeCfg.Panel.NodeID, "error", err)
-							errCh <- err
-							cancel()
+						for {
+							svc := service.New(nodeCfg)
+							err := svc.Run(ctx)
+							if ctx.Err() != nil {
+								return
+							}
+							nlog.Core().Warn("node service exited, restarting in 5s",
+								"instance", nodeCfg.InstanceID,
+								"node_id", nodeCfg.Panel.NodeID,
+								"error", err)
+							select {
+							case <-time.After(5 * time.Second):
+							case <-ctx.Done():
+								return
+							}
 						}
 					}(idx)
 				}

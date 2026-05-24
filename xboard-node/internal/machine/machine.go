@@ -25,6 +25,8 @@ type nodeHandle struct {
 	mailbox *controlplane.NodeMailbox
 }
 
+const nodeRestartDelay = 5 * time.Second
+
 // Orchestrator manages all nodes bound to a panel machine. It:
 //   - discovers nodes via GET /machine/nodes
 //   - starts / stops Service instances as nodes are added / removed
@@ -116,9 +118,14 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	o.mu.Lock()
-	if _, exists := o.nodes[mn.ID]; exists {
-		o.mu.Unlock()
-		return
+	if h, exists := o.nodes[mn.ID]; exists {
+		select {
+		case <-h.done:
+			delete(o.nodes, mn.ID)
+		default:
+			o.mu.Unlock()
+			return
+		}
 	}
 
 	nodeCtx, cancel := context.WithCancel(ctx)
@@ -172,11 +179,35 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 
 	go func() {
 		defer close(done)
-		defer o.unregisterNode(mn.ID)
-		if err := svc.Run(nodeCtx); err != nil {
+		err := svc.Run(nodeCtx)
+		o.unregisterNode(mn.ID)
+
+		o.mu.Lock()
+		delete(o.nodes, mn.ID)
+		o.mu.Unlock()
+
+		if ctx.Err() != nil || nodeCtx.Err() != nil {
+			return
+		}
+
+		reason := "stopped"
+		if err != nil {
+			reason = err.Error()
 			nlog.Core().Error("machine node exited with error",
 				"node_id", mn.ID, "error", err)
+		} else {
+			nlog.Core().Warn("machine node exited unexpectedly",
+				"node_id", mn.ID)
 		}
+
+		nlog.Core().Info(fmt.Sprintf("machine: restarting node %d in %s (%s)",
+			mn.ID, nodeRestartDelay, reason))
+		time.AfterFunc(nodeRestartDelay, func() {
+			if o.runCtx == nil || o.runCtx.Err() != nil {
+				return
+			}
+			o.startNode(o.runCtx, mn)
+		})
 	}()
 }
 

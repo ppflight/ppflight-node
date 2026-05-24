@@ -111,7 +111,7 @@ type NodeConfig struct {
 	// than PanelGracePeriod. Defaults to true when omitted.
 	PanelFailClosed *bool `yaml:"panel_fail_closed,omitempty"`
 	// PanelGracePeriod is how long the panel may be unreachable before the
-	// kernel is stopped (seconds). Default 90.
+	// kernel is stopped (seconds). Default 300 (5 minutes).
 	PanelGracePeriod int `yaml:"panel_grace_period"`
 }
 
@@ -615,7 +615,7 @@ func (c *Config) setDefaultsFrom(baseDir string) {
 		c.Node.DeviceReportInterval = 30
 	}
 	if c.Node.PanelGracePeriod == 0 {
-		c.Node.PanelGracePeriod = 90
+		c.Node.PanelGracePeriod = 300
 	}
 }
 
@@ -635,7 +635,7 @@ func (c *Config) PanelFailClosedEnabled() bool {
 func (c *Config) PanelGracePeriodDuration() time.Duration {
 	sec := c.Node.PanelGracePeriod
 	if sec <= 0 {
-		sec = 90
+		sec = 300
 	}
 	return time.Duration(sec) * time.Second
 }

@@ -624,6 +624,7 @@ EnvironmentFile=-${CREDENTIALS_FILE}
 ExecStart=${BINARY_PATH} -c ${CONFIG_FILE}
 Restart=always
 RestartSec=5
+StartLimitIntervalSec=0
 LimitNOFILE=1048576
 NoNewPrivileges=true
 StandardOutput=journal
