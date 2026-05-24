@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ppflight/ppflight-node/xboard-node/internal/nlog"
 	"golang.org/x/term"
@@ -106,6 +107,12 @@ type NodeConfig struct {
 	PullInterval         int `yaml:"pull_interval"`
 	TrackInterval        int `yaml:"track_interval"`         // sec, default 10
 	DeviceReportInterval int `yaml:"device_report_interval"` // sec, default 30
+	// PanelFailClosed stops serving when the panel is unreachable for longer
+	// than PanelGracePeriod. Defaults to true when omitted.
+	PanelFailClosed *bool `yaml:"panel_fail_closed,omitempty"`
+	// PanelGracePeriod is how long the panel may be unreachable before the
+	// kernel is stopped (seconds). Default 90.
+	PanelGracePeriod int `yaml:"panel_grace_period"`
 }
 
 // WSConfig holds WebSocket client tuning options.
@@ -471,6 +478,12 @@ func (c *Config) inheritFrom(parent *Config) {
 	if c.Node.DeviceReportInterval == 0 {
 		c.Node.DeviceReportInterval = parent.Node.DeviceReportInterval
 	}
+	if c.Node.PanelFailClosed == nil {
+		c.Node.PanelFailClosed = parent.Node.PanelFailClosed
+	}
+	if c.Node.PanelGracePeriod == 0 {
+		c.Node.PanelGracePeriod = parent.Node.PanelGracePeriod
+	}
 	// WS
 	if c.WS.StatusInterval == 0 {
 		c.WS.StatusInterval = parent.WS.StatusInterval
@@ -601,6 +614,30 @@ func (c *Config) setDefaultsFrom(baseDir string) {
 	if c.Node.DeviceReportInterval == 0 {
 		c.Node.DeviceReportInterval = 30
 	}
+	if c.Node.PanelGracePeriod == 0 {
+		c.Node.PanelGracePeriod = 90
+	}
+}
+
+// PanelFailClosedEnabled reports whether the node should stop serving when
+// the panel has been unreachable for longer than PanelGracePeriod.
+func (c *Config) PanelFailClosedEnabled() bool {
+	if c.IsStandalone() {
+		return false
+	}
+	if c.Node.PanelFailClosed != nil {
+		return *c.Node.PanelFailClosed
+	}
+	return true
+}
+
+// PanelGracePeriodDuration returns the configured panel grace period.
+func (c *Config) PanelGracePeriodDuration() time.Duration {
+	sec := c.Node.PanelGracePeriod
+	if sec <= 0 {
+		sec = 90
+	}
+	return time.Duration(sec) * time.Second
 }
 
 func (c *Config) IsMachineMode() bool {

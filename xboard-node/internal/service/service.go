@@ -75,6 +75,10 @@ type Service struct {
 	machineMailbox   *controlplane.NodeMailbox
 	machineMailboxCh <-chan struct{}
 
+	panelHealthMu    sync.Mutex
+	lastPanelContact time.Time
+	stoppedForPanel  bool
+
 	// metricsMu: lastUsers, lastConfig, wsClient, wsDisconnectAt (buildMetrics vs main loop).
 	metricsMu sync.RWMutex
 }
@@ -257,6 +261,7 @@ func (s *Service) initialSetup(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.touchPanelContact()
 
 	if s.cfg.Node.PushInterval == 0 && bootstrap.PushInterval > 0 {
 		s.pushInterval = bootstrap.PushInterval
@@ -453,6 +458,7 @@ func (s *Service) handleWSStatus(ctx context.Context, status controlplane.Status
 		s.metricsMu.Lock()
 		s.wsDisconnectAt = time.Time{}
 		s.metricsMu.Unlock()
+		s.touchPanelContact()
 		// Use nodeLog if available, otherwise core
 		if s.nodeLog != nil {
 			s.nodeLog.Info("ws connected")
@@ -538,6 +544,7 @@ func (s *Service) wsDiscovery(ctx context.Context) {
 
 // handleWSEvent processes data events received via WebSocket
 func (s *Service) handleWSEvent(ctx context.Context, event controlplane.Event) {
+	s.touchPanelContact()
 	switch event.Type {
 	case controlplane.EventSyncConfig:
 		if event.Config == nil {
@@ -624,6 +631,7 @@ func (s *Service) pullViaAPIAsync(ctx context.Context) {
 			return
 		}
 		s.pullBackoff.onSuccess()
+		s.touchPanelContact()
 
 		result := pullResult{certChanged: certChanged}
 		if snapshot.Config != nil {
@@ -940,7 +948,60 @@ func (s *Service) applyChanges(ctx context.Context, configChanged, usersChanged 
 	}
 }
 
+func (s *Service) touchPanelContact() {
+	if !s.cfg.PanelFailClosedEnabled() {
+		return
+	}
+	s.panelHealthMu.Lock()
+	wasStopped := s.stoppedForPanel
+	s.lastPanelContact = time.Now()
+	s.stoppedForPanel = false
+	s.panelHealthMu.Unlock()
+	if wasStopped {
+		if s.ensureRunning() {
+			if s.nodeLog != nil {
+				s.nodeLog.Info("panel recovered, kernel restarted")
+			} else {
+				nlog.Core().Info("panel recovered, kernel restarted")
+			}
+		}
+	}
+}
+
+func (s *Service) enforcePanelHealth(ctx context.Context) {
+	if !s.cfg.PanelFailClosedEnabled() {
+		return
+	}
+	s.panelHealthMu.Lock()
+	last := s.lastPanelContact
+	s.panelHealthMu.Unlock()
+	if last.IsZero() {
+		return
+	}
+
+	unreachable := time.Since(last)
+	grace := s.cfg.PanelGracePeriodDuration()
+	if unreachable < grace {
+		return
+	}
+
+	if s.kernel.IsRunning() {
+		msg := fmt.Sprintf("panel unreachable for %s, stopping kernel (grace=%s)",
+			unreachable.Round(time.Second), grace)
+		if s.nodeLog != nil {
+			s.nodeLog.Warn(msg)
+		} else {
+			nlog.Core().Warn(msg)
+		}
+		s.kernel.Stop()
+		s.panelHealthMu.Lock()
+		s.stoppedForPanel = true
+		s.panelHealthMu.Unlock()
+	}
+}
+
 func (s *Service) trackAndEnforce(ctx context.Context) {
+	s.enforcePanelHealth(ctx)
 	if !s.kernel.IsRunning() {
 		return
 	}
@@ -1001,6 +1062,7 @@ func (s *Service) pushReportAsync() {
 			return
 		}
 		s.pushBackoff.onSuccess()
+		s.touchPanelContact()
 		nlog.ReportPushed(len(traffic), len(online))
 	}()
 }
