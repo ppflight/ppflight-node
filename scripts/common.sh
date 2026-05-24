@@ -14,6 +14,10 @@ UPSTREAM_INSTALL="$SRC/install.sh"
 
 export PATH="$PATH:/usr/local/go/bin"
 
+REPO_URL="${PPFLIGHT_REPO_URL:-https://github.com/ppflight/ppflight-node.git}"
+INSTALL_DIR="${PPFLIGHT_INSTALL_DIR:-/opt/ppflight-node}"
+GO_VERSION="${PPFLIGHT_GO_VERSION:-1.26.0}"
+
 need_root() {
   [ "$(id -u)" -eq 0 ] || { echo "请用 root 运行: sudo $*"; exit 1; }
 }
@@ -66,6 +70,60 @@ binary_paths() {
   CTL_BIN="$DIST/${CLI_NAME}-linux-$A"
 }
 
+ensure_go() {
+  if command -v go >/dev/null 2>&1; then
+    return 0
+  fi
+  need_root
+  local arch tar="/tmp/go${GO_VERSION}.tar.gz"
+  case "$(uname -m)" in
+    x86_64|amd64) arch=amd64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    *) echo "不支持的架构: $(uname -m)"; exit 1 ;;
+  esac
+  echo "[安装] Go ${GO_VERSION} ..."
+  command -v curl >/dev/null || { apt-get update && apt-get install -y curl; }
+  curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" -o "$tar"
+  rm -rf /usr/local/go
+  tar -C /usr/local -xzf "$tar"
+  rm -f "$tar"
+  export PATH="$PATH:/usr/local/go/bin"
+}
+
+ensure_repo() {
+  need_root
+  command -v git >/dev/null || { apt-get update && apt-get install -y git curl ca-certificates; }
+  if [ ! -d "$INSTALL_DIR/.git" ]; then
+    echo "[下载] clone $REPO_URL -> $INSTALL_DIR"
+    rm -rf "$INSTALL_DIR"
+    git clone --depth 1 -b main "$REPO_URL" "$INSTALL_DIR"
+  fi
+}
+
+install_with_args() {
+  need_root
+  [ -d "$SRC" ] || { echo "缺少源码目录: $SRC"; exit 1; }
+  [ $# -gt 0 ] || { echo "用法: install.sh --mode machine --panel URL --token TOKEN --machine-id ID"; exit 1; }
+
+  ensure_go
+  build_binaries
+  binary_paths
+
+  echo "[安装] ppflight-node (${*})"
+  bash "$UPSTREAM_INSTALL" install \
+    --binary "$NODE_BIN" --xbctl-binary "$CTL_BIN" \
+    "$@"
+  install_cli_symlinks
+
+  echo ""
+  echo "=========================================="
+  echo " 安装完成: ${APP_NAME}"
+  echo " 状态:   ppctl status"
+  echo " 健康:   curl -s http://127.0.0.1:65530/healthz"
+  echo " 管理:   bash ${INSTALL_DIR}/node.sh"
+  echo "=========================================="
+}
+
 run_upstream_install() {
   need_root
   binary_paths
@@ -77,7 +135,9 @@ run_upstream_install() {
   echo "2) machine 模式（机器）"
   read -rp "选择 [1/2]: " m
   read -rp "面板 URL: " PANEL
-  read -rp "Token: " TOKEN
+  local label="Machine 通讯密钥"
+  [[ "$m" = "1" ]] && label="节点通讯密钥"
+  read -rp "${label}: " TOKEN
 
   if [ "$m" = "1" ]; then
     read -rp "Node ID: " NID
