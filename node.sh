@@ -12,7 +12,7 @@ while true; do
   echo "======== ppflight-node 控制 ========"
   echo " 1) 更新源码 (pull + 编译 + 部署)"
   echo " 2) 查看状态"
-  echo " 3) 用户信息 (在线 / 上下行流量)"
+  echo " 3) 用户信息 (在线 / 节点筛选 / 流量)"
   echo " 4) 实时日志"
   echo " 5) 重启服务"
   echo " 6) 修改面板地址"

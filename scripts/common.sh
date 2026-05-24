@@ -409,7 +409,7 @@ update_source() {
 }
 
 show_users() {
-  local port url
+  local port url filter
   port=$(health_port)
   url="http://127.0.0.1:${port}/stats"
   echo "=== ${APP_NAME} 用户信息 ==="
@@ -422,15 +422,61 @@ show_users() {
     cat /tmp/ppflight-stats.json
     return 0
   fi
-  python3 - <<'PY'
+
+  filter=$(python3 - <<'PY'
 import json
 from pathlib import Path
 
 data = json.loads(Path("/tmp/ppflight-stats.json").read_text())
-nodes = data.get("nodes") or []
+nodes = sorted(data.get("nodes") or [], key=lambda n: n.get("node_id", 0))
+if not nodes:
+    print("NONE")
+    raise SystemExit(0)
+
+print("可用节点:")
+print("  0) 全部节点")
+for n in nodes:
+    nid = n.get("node_id", "?")
+    proto = n.get("protocol") or "-"
+    port = n.get("port") or "-"
+    online = n.get("online_user_count", 0)
+    print(f"  {nid}) 节点 {nid} ({proto}:{port})  在线 {online}")
+PY
+)
+  if [ "$filter" = "NONE" ]; then
+    echo "暂无节点数据（可能还没有用户连接）"
+    read -rp "回车继续..." _
+    return 0
+  fi
+
+  echo "$filter"
+  echo ""
+  read -rp "筛选节点 [0=全部]: " filter_choice
+  filter_choice="${filter_choice:-0}"
+
+  PPFLIGHT_NODE_FILTER="$filter_choice" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+data = json.loads(Path("/tmp/ppflight-stats.json").read_text())
+nodes = sorted(data.get("nodes") or [], key=lambda n: n.get("node_id", 0))
 if not nodes:
     print("暂无节点数据（可能还没有用户连接）")
     raise SystemExit(0)
+
+raw_filter = (os.environ.get("PPFLIGHT_NODE_FILTER") or "0").strip()
+try:
+    node_filter = int(raw_filter)
+except ValueError:
+    print(f"无效筛选: {raw_filter}")
+    raise SystemExit(1)
+
+if node_filter != 0:
+    nodes = [n for n in nodes if n.get("node_id") == node_filter]
+    if not nodes:
+        print(f"未找到节点 {node_filter}")
+        raise SystemExit(1)
 
 def fmt_bytes(n):
     n = float(n or 0)
@@ -442,32 +488,72 @@ def fmt_bytes(n):
 def fmt_speed(bps):
     return fmt_bytes(bps) + "/s"
 
+def node_label(n):
+    nid = n.get("node_id", "?")
+    proto = n.get("protocol") or "-"
+    port = n.get("port") or "-"
+    return f"节点{nid} ({proto}:{port})"
+
+online_rows = []
+for node in nodes:
+    label = node_label(node)
+    for u in node.get("users") or []:
+        if u.get("online_devices", 0) <= 0:
+            continue
+        ips = u.get("ips") or []
+        online_rows.append({
+            "uid": u.get("user_id", 0),
+            "node_id": node.get("node_id", 0),
+            "node": label,
+            "devices": u.get("online_devices", 0),
+            "up": u.get("upload_bytes", 0),
+            "down": u.get("download_bytes", 0),
+            "uuid": u.get("uuid") or "-",
+            "ips": ", ".join(ips) if ips else "-",
+        })
+
+print("=== 在线用户一览 ===")
+if not online_rows:
+    print("(当前无在线用户)")
+else:
+    print(f"{'UID':<6}{'节点':<22}{'设备':<6}{'IP':<18}{'上传(待上报)':<14}{'下载(待上报)':<14}UUID")
+    for row in sorted(online_rows, key=lambda r: (r["node_id"], r["uid"])):
+        print(
+            f"{row['uid']:<6}{row['node']:<22}{row['devices']:<6}"
+            f"{row['ips']:<18}{fmt_bytes(row['up']):<14}{fmt_bytes(row['down']):<14}{row['uuid']}"
+        )
+
 total_up = total_down = total_online = 0
 for node in nodes:
     nid = node.get("node_id")
-    proto = node.get("protocol") or "-"
-    port = node.get("port") or "-"
-    print(f"\n--- Node {nid} ({proto}:{port}) ---")
+    label = node_label(node)
+    print(f"\n--- {label} ---")
     print(f"连接数: {node.get('active_connections', 0)}  在线用户: {node.get('online_user_count', 0)}")
     print(f"速率  上传: {fmt_speed(node.get('upload_speed_bps', 0))}  下载: {fmt_speed(node.get('download_speed_bps', 0))}")
     users = node.get("users") or []
     if not users:
         print("(无用户流量记录)")
         continue
-    print(f"{'':1}{'UID':<6}{'在线':<6}{'上传(待上报)':<16}{'下载(待上报)':<16}UUID")
+    print(f"{'':1}{'UID':<6}{'在线':<6}{'IP':<18}{'上传(待上报)':<16}{'下载(待上报)':<16}UUID")
     for u in sorted(users, key=lambda x: x.get("user_id", 0)):
         uid = u.get("user_id", 0)
         online = u.get("online_devices", 0)
         up = u.get("upload_bytes", 0)
         down = u.get("download_bytes", 0)
         uuid = u.get("uuid") or "-"
+        ips = ", ".join(u.get("ips") or []) or "-"
         mark = "*" if online > 0 else " "
         total_up += up
         total_down += down
         if online > 0:
             total_online += 1
-        print(f"{mark}{uid:<5}{online:<6}{fmt_bytes(up):<16}{fmt_bytes(down):<16}{uuid}")
-print(f"\n合计 在线用户: {total_online}  上传: {fmt_bytes(total_up)}  下载: {fmt_bytes(total_down)}")
+        print(f"{mark}{uid:<5}{online:<6}{ips:<18}{fmt_bytes(up):<16}{fmt_bytes(down):<16}{uuid}")
+
+if node_filter == 0:
+    scope = "全部节点"
+else:
+    scope = f"节点 {node_filter}"
+print(f"\n合计 [{scope}] 在线用户: {total_online}  上传: {fmt_bytes(total_up)}  下载: {fmt_bytes(total_down)}")
 print("(* 当前在线  流量为距上次上报面板前的累计值)")
 PY
   read -rp "回车继续..." _
