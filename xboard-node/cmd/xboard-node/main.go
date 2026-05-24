@@ -32,7 +32,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("xboard-node %s (built %s)\n", version, buildTime)
+		fmt.Printf("ppflight-node %s (built %s)\n", version, buildTime)
 		os.Exit(0)
 	}
 

@@ -3,8 +3,8 @@
 
 APP_NAME="ppflight-node"
 CLI_NAME="ppctl"
-# 上游 installer 注册的 systemd 单元名（内部仍为此名）
-SERVICE_UNIT="xboard-node"
+SERVICE_UNIT="ppflight-node"
+LEGACY_SERVICE_UNIT="xboard-node"
 CONFIG_DIR="/etc/xboard-node"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,13 +35,53 @@ install_cli_symlinks() {
   local A NODE_BIN CTL_BIN
   A=$(arch_name)
   binary_paths
+  systemctl stop "${SERVICE_UNIT}" "${LEGACY_SERVICE_UNIT}" >/dev/null 2>&1 || true
   cp "$NODE_BIN" "/usr/local/bin/${APP_NAME}"
   cp "$CTL_BIN" "/usr/local/bin/${CLI_NAME}"
   chmod 755 "/usr/local/bin/${APP_NAME}" "/usr/local/bin/${CLI_NAME}"
-  # 兼容上游 xbctl / 旧路径
   ln -sf "/usr/local/bin/${APP_NAME}" /usr/local/bin/xboard-node
   ln -sf "/usr/local/bin/${CLI_NAME}" /usr/local/bin/xbctl
   ln -sf "/usr/local/bin/${CLI_NAME}" /usr/bin/xbctl 2>/dev/null || true
+}
+
+migrate_service_unit() {
+  need_root
+  local NEW_UNIT="/etc/systemd/system/${SERVICE_UNIT}.service"
+  local OLD_UNIT="/etc/systemd/system/${LEGACY_SERVICE_UNIT}.service"
+  local CFG="${CONFIG_DIR}/config.yml"
+  local CREDS="${CONFIG_DIR}/credentials.env"
+
+  if systemctl is-active "${LEGACY_SERVICE_UNIT}" >/dev/null 2>&1 || [ -f "$OLD_UNIT" ]; then
+    systemctl stop "${LEGACY_SERVICE_UNIT}" >/dev/null 2>&1 || true
+    systemctl disable "${LEGACY_SERVICE_UNIT}" >/dev/null 2>&1 || true
+    rm -f "$OLD_UNIT"
+  fi
+
+  cat >"$NEW_UNIT" <<EOF
+[Unit]
+Description=PPFlight Node Backend
+Documentation=https://github.com/ppflight/ppflight-node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${CONFIG_DIR}
+EnvironmentFile=-${CREDS}
+ExecStart=/usr/local/bin/${APP_NAME} -c ${CFG}
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable "${SERVICE_UNIT}" >/dev/null 2>&1 || true
 }
 
 build_binaries() {
@@ -157,6 +197,7 @@ run_upstream_install() {
 upgrade_binaries() {
   build_binaries
   install_cli_symlinks
+  migrate_service_unit
   systemctl restart "$SERVICE_UNIT"
   echo "[OK] 已升级并重启 ${APP_NAME}"
 }
@@ -357,6 +398,7 @@ update_source() {
   build_binaries
   echo "[3/3] 部署并重启 ..."
   install_cli_symlinks
+  migrate_service_unit
   systemctl restart "$SERVICE_UNIT"
   sleep 2
   if curl -fsS --max-time 3 "http://127.0.0.1:$(health_port)/healthz" >/dev/null 2>&1; then

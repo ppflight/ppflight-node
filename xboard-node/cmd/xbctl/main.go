@@ -25,12 +25,16 @@ const (
 	defaultConfigPath      = "/etc/xboard-node/config.yml"
 	defaultMetaPath        = "/etc/xboard-node/install-meta.json"
 	defaultCredentialsPath = "/etc/xboard-node/credentials.env"
-	defaultBinaryPath      = "/usr/local/bin/xboard-node"
-	defaultCLIPath         = "/usr/local/bin/xbctl"
-	serviceName            = "xboard-node.service"
-	serviceFilePath        = "/etc/systemd/system/xboard-node.service"
+	defaultBinaryPath      = "/usr/local/bin/ppflight-node"
+	defaultCLIPath         = "/usr/local/bin/ppctl"
+	legacyBinaryPath       = "/usr/local/bin/xboard-node"
+	legacyCLIPath          = "/usr/local/bin/xbctl"
+	serviceName            = "ppflight-node.service"
+	legacyServiceName      = "xboard-node.service"
+	serviceFilePath        = "/etc/systemd/system/ppflight-node.service"
+	legacyServiceFilePath  = "/etc/systemd/system/xboard-node.service"
 	defaultInstallRoot     = "/etc/xboard-node"
-	downloadBase           = "https://github.com/ppflight/ppflight-node/xboard-node/releases"
+	downloadBase           = "https://github.com/ppflight/ppflight-node/releases"
 )
 
 var (
@@ -183,7 +187,7 @@ func run(args []string) error {
 	case "uninstall":
 		return runUninstall(args[1:])
 	case "version", "-v", "--version":
-		fmt.Printf("xbctl %s (built %s)\n", version, buildTime)
+		fmt.Printf("ppctl %s (built %s)\n", version, buildTime)
 		return nil
 	case "config":
 		return runConfig(args[1:])
@@ -225,7 +229,7 @@ shortcuts:
 }
 
 func runStatus() error {
-	fmt.Println("xboard-node status")
+	fmt.Println("ppflight-node status")
 	fmt.Println()
 
 	// Version from install-meta.json
@@ -403,11 +407,11 @@ func runUpgrade(args []string) error {
 
 	binaryDir := filepath.Dir(defaultBinaryPath)
 	cliDir := filepath.Dir(defaultCLIPath)
-	newBinary := filepath.Join(binaryDir, ".xboard-node.new")
-	newCLI := filepath.Join(cliDir, ".xbctl.new")
+	newBinary := filepath.Join(binaryDir, ".ppflight-node.new")
+	newCLI := filepath.Join(cliDir, ".ppctl.new")
 
-	binaryURL := resolveDownloadURL(fmt.Sprintf("xboard-node-linux-%s", arch), version)
-	cliURL := resolveDownloadURL(fmt.Sprintf("xbctl-linux-%s", arch), version)
+	binaryURL := resolveDownloadURL(fmt.Sprintf("ppflight-node-linux-%s", arch), version)
+	cliURL := resolveDownloadURL(fmt.Sprintf("ppctl-linux-%s", arch), version)
 
 	fmt.Printf("Downloading %s...\n", binaryURL)
 	if err := downloadFile(binaryURL, newBinary); err != nil {
@@ -417,14 +421,14 @@ func runUpgrade(args []string) error {
 	fmt.Printf("Downloading %s...\n", cliURL)
 	if err := downloadFile(cliURL, newCLI); err != nil {
 		os.Remove(newBinary)
-		return fmt.Errorf("download xbctl: %w", err)
+		return fmt.Errorf("download ppctl: %w", err)
 	}
 
 	if err := os.Chmod(newBinary, 0o755); err != nil {
 		return cleanupFiles(newBinary, newCLI, fmt.Errorf("chmod binary: %w", err))
 	}
 	if err := os.Chmod(newCLI, 0o755); err != nil {
-		return cleanupFiles(newBinary, newCLI, fmt.Errorf("chmod xbctl: %w", err))
+		return cleanupFiles(newBinary, newCLI, fmt.Errorf("chmod ppctl: %w", err))
 	}
 
 	// Validate downloaded binaries
@@ -432,7 +436,7 @@ func runUpgrade(args []string) error {
 		return cleanupFiles(newBinary, newCLI, fmt.Errorf("binary version check failed: %s", string(out)))
 	}
 	if out, err := exec.Command(newCLI, "version").CombinedOutput(); err != nil {
-		return cleanupFiles(newBinary, newCLI, fmt.Errorf("xbctl version check failed: %s", string(out)))
+		return cleanupFiles(newBinary, newCLI, fmt.Errorf("ppctl version check failed: %s", string(out)))
 	}
 
 	// Backup existing binaries
@@ -443,10 +447,18 @@ func runUpgrade(args []string) error {
 		if err := copyFile(defaultBinaryPath, backupBinary); err != nil {
 			return cleanupFiles(newBinary, newCLI, fmt.Errorf("backup binary: %w", err))
 		}
+	} else if fileExists(legacyBinaryPath) {
+		if err := copyFile(legacyBinaryPath, backupBinary); err != nil {
+			return cleanupFiles(newBinary, newCLI, fmt.Errorf("backup binary: %w", err))
+		}
 	}
 	if fileExists(defaultCLIPath) {
 		if err := copyFile(defaultCLIPath, backupCLI); err != nil {
-			return cleanupFiles(newBinary, newCLI, fmt.Errorf("backup xbctl: %w", err))
+			return cleanupFiles(newBinary, newCLI, fmt.Errorf("backup ppctl: %w", err))
+		}
+	} else if fileExists(legacyCLIPath) {
+		if err := copyFile(legacyCLIPath, backupCLI); err != nil {
+			return cleanupFiles(newBinary, newCLI, fmt.Errorf("backup ppctl: %w", err))
 		}
 	}
 
@@ -459,12 +471,16 @@ func runUpgrade(args []string) error {
 			os.Rename(backupBinary, defaultBinaryPath)
 		}
 		os.Remove(newCLI)
-		return fmt.Errorf("replace xbctl: %w", err)
+		return fmt.Errorf("replace ppctl: %w", err)
 	}
 
-	// Recreate /usr/bin/xbctl symlink
-	os.Remove("/usr/bin/xbctl")
-	os.Symlink(defaultCLIPath, "/usr/bin/xbctl")
+	installCLISymlinks()
+	if err := migrateLegacyService(); err != nil {
+		return err
+	}
+	if err := regenerateServiceFile(); err != nil {
+		return fmt.Errorf("write service file: %w", err)
+	}
 
 	// Restart service
 	fmt.Println("Restarting service...")
@@ -480,7 +496,7 @@ func runUpgrade(args []string) error {
 		}
 		if fileExists(backupCLI) {
 			if e := os.Rename(backupCLI, defaultCLIPath); e != nil {
-				fmt.Printf("Warning: rollback xbctl failed: %v\n", e)
+				fmt.Printf("Warning: rollback ppctl failed: %v\n", e)
 				rollbackOK = false
 			}
 		}
@@ -554,9 +570,15 @@ func runUninstall(args []string) error {
 		runCommand("systemctl", "daemon-reload")
 	}
 
+	if fileExists(legacyServiceFilePath) {
+		runCommand("systemctl", "stop", legacyServiceName)
+		runCommand("systemctl", "disable", legacyServiceName)
+		os.Remove(legacyServiceFilePath)
+		runCommand("systemctl", "daemon-reload")
+	}
+
 	// Remove binaries
-	// Remove binaries and symlinks
-	for _, p := range []string{defaultBinaryPath, defaultCLIPath, "/usr/bin/xbctl"} {
+	for _, p := range []string{defaultBinaryPath, legacyBinaryPath, defaultCLIPath, legacyCLIPath, "/usr/bin/xbctl"} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			warnings = append(warnings, fmt.Sprintf("remove %s: %v", p, err))
 		}
@@ -1156,8 +1178,8 @@ func latestInstanceID(instances []*config.Config) string {
 
 func regenerateServiceFile() error {
 	unit := fmt.Sprintf(`[Unit]
-Description=Xboard Node Backend
-Documentation=https://github.com/ppflight/ppflight-node/xboard-node
+Description=PPFlight Node Backend
+Documentation=https://github.com/ppflight/ppflight-node
 After=network-online.target
 Wants=network-online.target
 
@@ -1177,6 +1199,27 @@ StandardError=journal
 WantedBy=multi-user.target
 `, defaultInstallRoot, defaultCredentialsPath, defaultBinaryPath, defaultConfigPath)
 	return os.WriteFile(serviceFilePath, []byte(unit), 0o644)
+}
+
+func installCLISymlinks() {
+	os.Remove(legacyBinaryPath)
+	os.Remove(legacyCLIPath)
+	os.Remove("/usr/bin/xbctl")
+	_ = os.Symlink(defaultBinaryPath, legacyBinaryPath)
+	_ = os.Symlink(defaultCLIPath, legacyCLIPath)
+	_ = os.Symlink(defaultCLIPath, "/usr/bin/xbctl")
+}
+
+func migrateLegacyService() error {
+	if !fileExists(legacyServiceFilePath) {
+		return nil
+	}
+	runCommand("systemctl", "stop", legacyServiceName)
+	runCommand("systemctl", "disable", legacyServiceName)
+	if err := os.Remove(legacyServiceFilePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove legacy service file: %w", err)
+	}
+	return nil
 }
 
 func machineIDPtr(cfg *config.Config) *int {
